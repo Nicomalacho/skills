@@ -114,9 +114,23 @@ After `git rebase --continue` completes for a PR:
 
 Do not skip step 1 for trivial-looking resolutions. The whole point of cascade rebasing is to land code; landing broken code wastes more time than the quick check costs.
 
+## Squash-merge cascades intentionally drop commits
+
+The "never drop commits" rule has one carve-out: when a stacked ancestor was **squash-merged**, the child branch's history still contains the pre-squash commits as ordinary commits, and rebasing the child onto the new base with a plain `git rebase origin/<base>` will replay them on top of the squash — producing phantom conflicts in every file the ancestor modified.
+
+The right tool is `git rebase --onto`, applied *structurally*, before conflict resolution ever runs:
+
+```bash
+git rebase --onto <new-base> <old-base-tip> <child-branch>
+```
+
+This drops the commit range `<old-base-tip>..<child-branch>` minus what's already in `<new-base>` — exactly the squashed segment — without invoking the conflict-resolution path. If instead you run a plain rebase and reach for `--theirs` / `--ours` / escalation, you're solving the wrong problem.
+
+See the "Merged-ancestor case" in `SKILL.md` for the exact command. Always prefer `--onto` for post-merge cascades; reserve plain `git rebase origin/<base>` for the case where the base hasn't changed and the conflict is genuinely an overlapping edit.
+
 ## What never to do
 
-- `git rebase --skip` to "get past" a conflict. This drops a commit.
+- `git rebase --skip` to "get past" a conflict. This drops a commit. (The squash-merge case above uses `--onto` to drop commits *structurally*, before any conflict surfaces — that is not the same as `--skip`.)
 - `git checkout --theirs <file>` / `--ours <file>` without thinking — these silently drop one side's intent.
 - `git push --force` (without `--with-lease`). If a teammate pushed in parallel, you will obliterate their work.
 - `git reset --hard` mid-rebase to "start over". Use `git rebase --abort`.

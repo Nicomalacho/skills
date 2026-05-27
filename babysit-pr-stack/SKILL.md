@@ -64,10 +64,43 @@ Each polling tick (whether you are in `/loop` or polling manually) does the foll
    - A previously-open PR is now **merged** → its children need their base retargeted (GitHub auto-retargets to the merged PR's base, but the local branches still need rebasing onto the new base SHA).
    - A previously-open PR has a **new head SHA** (the user or you pushed to it) → every PR above it in the stack needs to be rebased onto the new commits.
 4. **Act on the lowest unresolved trigger first.** Cascades propagate, so handling the bottom keeps the upper PRs from doing redundant work.
-   - **Merged-ancestor case:** for each child above the merged PR, fetch, checkout the child's head branch, `git rebase origin/<new-base>`. If conflicts arise, follow the resolution rules below.
-   - **Updated-ancestor case:** same as above, but rebase onto the ancestor's new head SHA.
-   - **Conflict-only case:** rebase the dirty PR onto its current base.
+
+   The form of the rebase command matters. A naive `git rebase origin/<new-base>` *replays* every commit reachable from the child but not from the new base — including the merged ancestor's pre-squash commits, which will conflict against the squash. Use `--onto` to drop the old-base segment cleanly:
+
+   ```bash
+   git fetch origin
+   git checkout <child-branch>
+   git rebase --onto <new-base> <old-base-tip> <child-branch>
+   # e.g. git rebase --onto origin/main origin/test/stack-1 test/stack-2
+   ```
+
+   Where:
+   - `<new-base>` = the branch the child should now sit on top of (usually `origin/main` after the parent merges, or the ancestor's new head SHA if the ancestor was updated rather than merged).
+   - `<old-base-tip>` = the tip of the branch the child used to sit on (i.e. the merged ancestor's pre-merge head, or the ancestor's previous SHA). Captured from the prior-tick snapshot or `gh pr view <ancestor> --json mergeCommit,headRefOid` before/after the change.
+   - `<child-branch>` = the PR head branch you're rebasing.
+
+   `--onto` drops the commits between the old base and the child cleanly, so a squash-merged ancestor never produces phantom conflicts in CHANGELOGs, lockfiles, or anywhere else the squashed commits modified the same files.
+
+   Sub-cases:
+   - **Merged-ancestor case:** new-base = the merged PR's base (default branch after merge). Old-base-tip = `origin/<merged-PR-head-branch>` (still present unless the user deleted it).
+   - **Updated-ancestor case:** new-base = the ancestor's new head SHA. Old-base-tip = the ancestor's previous head SHA from the prior snapshot.
+   - **Conflict-only case** (`DIRTY` with no ancestor change): a plain `git rebase origin/<base>` is fine — there's no segment to drop because the base hasn't moved out from under the PR; conflicts here are real overlapping edits, not replay artifacts.
+
    After each successful rebase, `git push --force-with-lease` and move to the next PR up. Never `--force` without lease — another collaborator may have pushed.
+
+   **Retarget the GitHub PR base when needed.** GitHub auto-retargets a child PR's base only when the merged parent's head branch is **deleted**. If the user kept the branch (common when settings preserve branches or the merge was via API with `delete-branch=false`), the child PR will still show `base = <merged-parent-head>` on GitHub even though you've already rebased it onto `main` locally. Retarget it explicitly:
+
+   ```bash
+   gh pr edit <child-pr> --repo <owner>/<repo> --base <new-base>
+   ```
+
+   If `gh pr edit` exits non-zero with a GraphQL deprecation error (older repos with classic Projects emit a noisy warning that crashes the command), fall back to the REST API directly:
+
+   ```bash
+   gh api -X PATCH repos/<owner>/<repo>/pulls/<child-pr> -f base=<new-base>
+   ```
+
+   The REST PATCH applies cleanly and ignores the GraphQL noise.
 5. **Per-PR babysitting.** Once cascades are settled, treat each open PR like `babysit-pr` would: classify failing checks, retry flakies (budget of 3), surface review comments, fix branch-related failures. Do this top-down for visibility but bottom-up for fix priority (a failing bottom PR blocks everything above it).
 6. **Report progress** as a compact table:
    ```
@@ -129,6 +162,8 @@ A single tick must be **idempotent** — if /loop fires it twice, the second tic
 ```
 
 Read this file at the **start** of every tick. If missing (first run, or a new anchor), skip diffing and treat the current snapshot as baseline. Write at the **end** of every tick, replacing the prior contents. Diff by comparing `head_sha` and `state` per PR; a SHA change or `OPEN → MERGED` transition is a cascade trigger. Empty/zero values for `reviewDecision` or `statusCheckRollup` are normal when no reviewers/CI are configured — treat them as the same as "no signal", not as missing data.
+
+**First-tick exception.** "Treat current snapshot as baseline" is correct for everything *except* already-merged ancestors. If you find a PR with `state: MERGED` whose head branch is still listed as the `baseRefName` of a downstream OPEN PR, that is a cascade trigger even on the first tick — the merge happened before you started watching, but the work to propagate it has not been done yet. Process it the same as if you had observed the merge transition live. Without this exception, anchoring the skill on a stack where the bottom merged five minutes before you ran would silently skip the cascade.
 
 ## Git safety
 
