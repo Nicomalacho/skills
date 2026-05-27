@@ -1,0 +1,26 @@
+{
+  "skill_name": "babysit-pr-stack",
+  "evals": [
+    {
+      "id": 1,
+      "name": "watch-stack-from-current-branch",
+      "prompt": "ok i've got three PRs stacked here — #847 is the bottom (the refactor), #848 adds the new endpoint on top, and #849 is the UI changes. i'm on the top branch (feature/billing-ui) right now. can you keep an eye on the whole stack and rebase the upper ones when stuff merges? the bottom is almost ready to land i think",
+      "expected_output": "The skill should discover the stack from current branch (#849 → #848 → #847 → main), confirm the chain to the user, start polling all three PRs, and on merge of #847 cascade-rebase #848 and #849.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "rebase-conflict-during-cascade",
+      "prompt": "monitor my stack: PRs 412, 413, 414 (412 at bottom). i just merged 412 manually on github. can you rebase 413 and 414 onto main and push them? careful with the lockfile, last time you tried to hand-merge it and broke our CI for like 2 hours",
+      "expected_output": "The skill should detect #412 merged, rebase #413 onto main, regenerate the lockfile via the package manager instead of merging the conflict by hand, push --force-with-lease, then rebase #414 onto the new #413 head.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "complex-conflict-escalation",
+      "prompt": "/loop 3m /babysit-pr-stack 1567 — that's the bottom of a 4-PR stack i'm landing today. watch it, rebase the rest when each one merges, but DON'T touch conflicts in our migration files or anything in deploy/, ping me on those",
+      "expected_output": "The skill should discover the full 4-PR stack from #1567, run on a 3-minute /loop, cascade-rebase as each merges, auto-resolve safe conflicts, but stop and report to the user with a clear conflict summary when conflicts touch migration files or the deploy/ directory.",
+      "files": []
+    }
+  ]
+}
