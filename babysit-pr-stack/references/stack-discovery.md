@@ -2,6 +2,12 @@
 
 This doc covers how to walk a GitHub PR stack from any anchor point using only `gh` and `git`. No graphite/spr/ghstack required.
 
+## Cross-repo invocation
+
+The examples below run against the repo of the current working directory. When the user gives you a PR by URL or number for a repo you aren't checked out into, pass `--repo <owner>/<name>` on every `gh pr ...` and `gh api ...` call (e.g. `gh pr view 12903 --repo snappr/snappr.server`). The `gh repo view` command takes the repo as a **positional** argument (`gh repo view owner/name --json ...`), not `--repo`.
+
+Discovery, snapshot, and reporting work **without a local clone** — they only need `gh`. Any rebase or push step requires a local checkout of the head branches; clone or fetch them on demand the first time you need to cascade.
+
 ## Mental model
 
 A stack is a linear chain of open PRs where each PR's `baseRefName` equals the previous PR's `headRefName`. The chain ends at the bottom when `baseRefName` is the repo's default branch (typically `main` or `master`).

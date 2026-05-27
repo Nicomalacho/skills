@@ -111,7 +111,24 @@ This skill is designed for use under `/loop`. Two patterns:
 - **Fixed interval** (recommended when CI is the bottleneck): `/loop 2m /babysit-pr-stack` — runs a full tick every 2 minutes.
 - **Self-paced** (recommended when actively rebasing): invoke without an interval; let the model schedule the next tick based on what it observed. If a rebase just pushed new SHAs, poll sooner (60–90 s). If everything is quietly waiting on CI, poll every 2–5 min.
 
-A single tick must be **idempotent** — if /loop fires it twice, the second tick should be a no-op when nothing changed. Use the prior-tick snapshot (kept in conversation memory or written to `/tmp/babysit-pr-stack-<repo>-state.json`) to detect changes; never re-rebase a PR whose head SHA matches the last tick's record.
+A single tick must be **idempotent** — if /loop fires it twice, the second tick should be a no-op when nothing changed. Use the prior-tick snapshot to detect changes; never re-rebase a PR whose head SHA matches the last tick's record.
+
+**Snapshot file format.** Persist at `/tmp/babysit-pr-stack-<owner>-<repo>.json`. Schema:
+
+```json
+{
+  "anchor": 3,
+  "default_branch": "main",
+  "stack": [
+    {"number": 1, "head": "test/stack-1", "base": "main",          "head_sha": "f01a4f7…", "state": "OPEN", "merge_state": "CLEAN"},
+    {"number": 2, "head": "test/stack-2", "base": "test/stack-1",  "head_sha": "8965a71…", "state": "OPEN", "merge_state": "CLEAN"},
+    {"number": 3, "head": "test/stack-3", "base": "test/stack-2",  "head_sha": "c72934c…", "state": "OPEN", "merge_state": "CLEAN"}
+  ],
+  "last_tick_at": "2026-05-27T13:14:00Z"
+}
+```
+
+Read this file at the **start** of every tick. If missing (first run, or a new anchor), skip diffing and treat the current snapshot as baseline. Write at the **end** of every tick, replacing the prior contents. Diff by comparing `head_sha` and `state` per PR; a SHA change or `OPEN → MERGED` transition is a cascade trigger. Empty/zero values for `reviewDecision` or `statusCheckRollup` are normal when no reviewers/CI are configured — treat them as the same as "no signal", not as missing data.
 
 ## Git safety
 
