@@ -64,6 +64,11 @@ Apply this **only** when the two additions are syntactically independent — bot
 
 ## Escalate to the user when
 
+- **Competing modifications to the same line, in any file type.** When both sides *modified* the same line to different values (as opposed to both adding new lines near each other), always escalate — even when one of three resolutions looks "obvious":
+  - take side A
+  - take side B
+  - combine into a new value neither author wrote
+  The combine-both move is the most dangerous because it asserts a third intent that neither author committed to. You cannot know whether one side deliberately rejected the other's wording. This applies to prose and Markdown the same as to code — a heading rename, a comment rewording, or a config-value change all need a human call. The auto-resolve "non-overlapping adjacent additions" rule covers *additions* only and explicitly does not extend to modifications.
 - **Overlapping edits in function bodies, conditionals, or control flow.** Even a one-line conflict in a `useEffect` dependency array or a switch statement can flip behavior. The model cannot reliably reconstruct intent from the diff alone.
 - **Database migrations / schema files.** Wrong ordering or merged-in steps corrupt the migration history. Always human.
 - **Infrastructure-as-code** (Terraform, Pulumi, Helm, k8s manifests) — wrong merges can take down production.
