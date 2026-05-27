@@ -187,6 +187,40 @@ User asks to watch `#501`.
 
 ---
 
+## Scenario 7 — Fan-out (parallel siblings, not a fork)
+
+### Setup
+
+```
+develop ──── #898 ──┬── #900  test(penalty): rolling-window-and-multiplier [RED-3668]
+                    ├── #901  test(penalty): thresholds [RED-3668]
+                    ├── #902  test(penalty): recovery-and-eligibility [RED-3668]
+                    └── #903  test(penalty): communications [RED-3668]
+```
+
+- One base PR with multiple sibling children meant to land in parallel.
+- All children share a ticket prefix and target the same base PR. None has further descendants.
+
+### Trigger
+
+User asks "watch my RED-3668 stack" or anchors on `#898`.
+
+### Expected skill behavior
+
+1. During discovery, detects 4 children of `#898` with matching ticket prefix and no grandchildren → classifies as a **fan-out**, not a fork.
+2. Reports the stack with the parent on its own line and the 4 parallel children indented beneath it.
+3. Manages all 4 children in parallel — polls each, runs per-PR babysitting on each.
+4. When `#898` merges, fetches `develop`, rebases each child onto `develop` (in any order), pushes each with `--force-with-lease`.
+5. Does **not** ask the user "which fork to follow" — that prompt is reserved for true forks.
+
+### Failure modes to watch for
+
+- Skill asks the user to pick one child to follow.
+- Skill picks one child silently and ignores the others.
+- Skill misclassifies a `BEHIND` or `UNSTABLE` child as `DIRTY` and triggers a rebase that wasn't needed.
+
+---
+
 ## How to use these scenarios
 
 - **Manual smoke test:** spin up a throwaway repo, recreate the stack with `gh pr create`, induce the trigger, and run the skill via Claude Code. Compare the behavior to the "Expected" section.

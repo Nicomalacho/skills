@@ -35,8 +35,11 @@ Build the ordered list bottom→top before doing anything else. Order matters be
 
 1. Resolve the anchor PR.
 2. **Walk down** (toward `main`): while the current PR's `baseRefName` is not the repo default branch, look up the open PR whose `headRefName` equals the current `baseRefName`. That parent PR is one level lower. Stop when `baseRefName` is the default branch (or there is no matching open PR — record this as "base is loose"; flag it to the user).
-3. **Walk up** (away from `main`): for each PR, look up open PRs whose `baseRefName` equals this PR's `headRefName`. Each becomes the next level up. If multiple children share the same parent, the stack actually forks — surface that and ask the user which branch to follow (do not silently pick one).
-4. Print the discovered stack to the user before acting on it. Stacks are easy to misidentify; a wrong order will corrupt history.
+3. **Walk up** (away from `main`): for each PR, look up open PRs whose `baseRefName` equals this PR's `headRefName`. Each becomes the next level up. When multiple children share the same parent you have one of two patterns — and they need different handling:
+   - **Fan-out** (siblings meant to land in parallel). Typical signs: similar title prefixes for the same ticket (e.g. all `test(...): ... [RED-3668]`), all targeting the same base PR, and no further descendants above any of them. Treat the group as a single layer above the parent: manage all children in parallel. They are independent above the merge point — once the shared parent lands, every child rebases onto the new base (typically the repo default) in any order.
+   - **True fork** (competing alternatives where only one is meant to land). Signs: children with conflicting goals/titles, or children that themselves have descendants above them. Surface the fork to the user with branch names and let them pick which line to follow.
+   - When the pattern is ambiguous, **ask**: show the children with their titles and ask "manage in parallel, or pick one?". Default to fan-out only when the signals are strong (matching ticket prefix, similar titles, no grandchildren).
+4. Print the discovered stack to the user before acting on it. Stacks are easy to misidentify; a wrong order will corrupt history. For fan-outs, show the parent on its own line and the parallel children indented underneath.
 
 Detailed `gh` commands and edge cases live in `references/stack-discovery.md`.
 
@@ -46,10 +49,20 @@ Each polling tick (whether you are in `/loop` or polling manually) does the foll
 
 1. **Refresh the stack list.** PRs may have merged or closed since last tick. Re-run discovery on the current top-of-stack if any anchor has disappeared.
 2. **Snapshot every PR** bottom→top. For each, capture: state (open/merged/closed), head SHA, base branch, mergeability, failing checks, new review items since last tick. Use `gh pr view <n> --json state,mergeable,mergeStateStatus,headRefOid,baseRefName,reviewDecision,statusCheckRollup,reviews,comments`.
-3. **Detect cascade triggers** by comparing to the previous tick (or initial baseline):
+3. **Detect cascade triggers** by comparing to the previous tick (or initial baseline) and by reading each PR's `mergeStateStatus`. The status values are not interchangeable — interpret them like this:
+
+   | Status | Meaning | Action |
+   |---|---|---|
+   | `DIRTY` | Merge conflicts against base | Rebase this PR onto its current base; auto-resolve safe conflicts, escalate the rest |
+   | `BEHIND` | Base advanced; mergeable but stale | Rebase onto the new base SHA (no conflict yet, just catching up) |
+   | `UNSTABLE` | Mergeable but at least one check non-success | Inspect failing/in-progress checks. If still running, **wait** — do not retry. If actually failed, classify like `babysit-pr` (branch-related fix vs flaky retry). UNSTABLE alone is not a cascade trigger |
+   | `BLOCKED` | Branch-protection / required-review not satisfied | Wait. Surface reviews needed; never act |
+   | `UNKNOWN` | GitHub still computing | Wait one tick, re-check; do not act |
+   | `CLEAN` / `HAS_HOOKS` | Ready to merge | No cascade work; continue monitoring |
+
+   Beyond `mergeStateStatus`, also compare to the previous snapshot:
    - A previously-open PR is now **merged** → its children need their base retargeted (GitHub auto-retargets to the merged PR's base, but the local branches still need rebasing onto the new base SHA).
    - A previously-open PR has a **new head SHA** (the user or you pushed to it) → every PR above it in the stack needs to be rebased onto the new commits.
-   - A PR shows `mergeStateStatus` of `DIRTY` (conflicts) → that specific PR needs a rebase.
 4. **Act on the lowest unresolved trigger first.** Cascades propagate, so handling the bottom keeps the upper PRs from doing redundant work.
    - **Merged-ancestor case:** for each child above the merged PR, fetch, checkout the child's head branch, `git rebase origin/<new-base>`. If conflicts arise, follow the resolution rules below.
    - **Updated-ancestor case:** same as above, but rebase onto the ancestor's new head SHA.
