@@ -1,107 +1,53 @@
 ---
 name: babysit-pr-stack
-description: Babysit a stack of dependent GitHub pull requests end-to-end — discover every PR in the stack from a starting branch or PR, poll each one's CI / review / mergeability, and cascade-rebase children automatically when an ancestor lands or moves. Resolves simple rebase conflicts in place (lockfiles, import collisions, non-overlapping adjacent edits, whitespace) and surfaces complex ones with diagnosis. Use this whenever the user asks to watch, monitor, babysit, manage, land, or unblock a stacked PR set, a chain of PRs, dependent branches, a "stack of changes", or says things like "PR X is on top of PR Y" or "rebase the stack when the bottom merges" — even if they don't say the word "stack" explicitly. Prefer this skill over single-PR babysitting whenever more than one open PR is chained head→base.
+description: Babysit a stack of dependent GitHub pull requests end-to-end — discover every PR in the stack from a starting branch or PR, poll each one's CI / review / mergeability, and cascade-rebase children automatically when an ancestor lands or moves. Resolves simple rebase conflicts in place (lockfiles, import collisions, non-overlapping adjacent edits, whitespace) and surfaces complex ones with diagnosis. Use this whenever the user asks to watch, monitor, babysit, manage, land, or unblock a stacked PR set, a chain of PRs, dependent branches, a "stack of changes", or says things like "PR X is on top of PR Y" or "rebase the stack when the bottom merges" — even if they don't say the word "stack" explicitly. Prefer this skill whenever more than one open PR is chained head→base.
 ---
 
 # Stacked PR Babysitter
 
 ## Objective
-Drive a stack of dependent GitHub PRs to a clean landing — bottom merges, children automatically rebase onto the new base, conflicts are resolved when safe, and CI/review state is monitored across every PR continuously.
 
-This skill is the multi-PR cousin of `babysit-pr`. Reuse the single-PR patterns from that skill for each individual PR; this skill adds the cross-PR coordination on top.
+Drive a stack of dependent GitHub PRs to a clean landing — bottom merges, children rebase onto the new base automatically, conflicts are auto-resolved when safe and escalated when not, and per-PR CI / review state stays monitored across every PR.
 
 ## When to use
 
-Use this skill when **any** of the following is true:
-
-- The user explicitly mentions a stack, chain, train, or series of PRs.
-- The current branch or anchor PR has another open PR's head as its base (i.e. its `base` is not the repo's default branch).
+- The user mentions a stack, chain, train, or series of PRs.
+- The current branch or anchor PR has another open PR's head as its base (its `base` is not the repo's default branch).
 - The user asks to "rebase the stack when X merges" or "keep the stack green".
 - More than one open PR exists where one's `base` equals another's `head`.
 
-For an isolated single PR (base == default branch, no children), defer to `babysit-pr` instead — its polling and review logic is leaner.
+For an isolated single PR (base = default branch, no children) the cross-PR coordination here is overkill — handle it as a normal PR.
 
 ## Inputs
 
 Accept any of:
 
-- **No argument** — discover the stack from the current branch. Resolve the PR for the current branch with `gh pr view --json number,baseRefName,headRefName,state`, then walk the stack.
-- **A single anchor PR** (number or URL) — discover the rest of the stack by walking up and down from there.
-- **An explicit ordered list** of PR numbers (bottom→top). Trust the order the user gave you.
+- **No argument** — discover the stack from the current branch. Resolve the PR with `gh pr view --json number,baseRefName,headRefName,state`, then walk.
+- **A single anchor PR** (number or URL) — walk up and down from there.
+- **An explicit ordered list** of PR numbers (bottom→top). Trust the order.
 
 ## Stack discovery
 
-Build the ordered list bottom→top before doing anything else. Order matters because rebases must cascade in that direction.
+Build the ordered list bottom→top before acting. Order matters — rebases must cascade in that direction.
 
 1. Resolve the anchor PR.
-2. **Walk down** (toward `main`): while the current PR's `baseRefName` is not the repo default branch, look up the open PR whose `headRefName` equals the current `baseRefName`. That parent PR is one level lower. Stop when `baseRefName` is the default branch (or there is no matching open PR — record this as "base is loose"; flag it to the user).
-3. **Walk up** (away from `main`): for each PR, look up open PRs whose `baseRefName` equals this PR's `headRefName`. Each becomes the next level up. When multiple children share the same parent you have one of two patterns — and they need different handling:
-   - **Fan-out** (siblings meant to land in parallel). Typical signs: similar title prefixes for the same ticket (e.g. all `test(...): ... [RED-3668]`), all targeting the same base PR, and no further descendants above any of them. Treat the group as a single layer above the parent: manage all children in parallel. They are independent above the merge point — once the shared parent lands, every child rebases onto the new base (typically the repo default) in any order.
-   - **True fork** (competing alternatives where only one is meant to land). Signs: children with conflicting goals/titles, or children that themselves have descendants above them. Surface the fork to the user with branch names and let them pick which line to follow.
-   - When the pattern is ambiguous, **ask**: show the children with their titles and ask "manage in parallel, or pick one?". Default to fan-out only when the signals are strong (matching ticket prefix, similar titles, no grandchildren).
-4. Print the discovered stack to the user before acting on it. Stacks are easy to misidentify; a wrong order will corrupt history. For fan-outs, show the parent on its own line and the parallel children indented underneath.
+2. **Walk down** toward the default branch: for each PR, look up the open PR whose `headRefName` equals this one's `baseRefName`. Stop when `baseRefName` is the default branch, or there is no matching open PR (flag this as a "loose base" to the user; don't silently assume it's the bottom).
+3. **Walk up** away from the default branch: look up open PRs whose `baseRefName` equals each PR's `headRefName`. When multiple children share one parent, distinguish **fan-out** (siblings meant to land in parallel — typical signs: matching ticket prefix, no grandchildren — manage in parallel) from a **true fork** (competing alternatives — surface and let the user pick). When ambiguous, ask.
+4. Print the discovered stack to the user before acting. A wrong order will corrupt history.
 
-Detailed `gh` commands and edge cases live in `references/stack-discovery.md`.
+Full `gh` commands, the walking pseudocode, and edge cases (closed-PR gaps, cross-fork PRs, renamed defaults): see `references/stack-discovery.md`.
 
 ## Per-tick workflow
 
-Each polling tick (whether you are in `/loop` or polling manually) does the following, in order:
+Each tick:
 
-1. **Refresh the stack list.** PRs may have merged or closed since last tick. Re-run discovery on the current top-of-stack if any anchor has disappeared.
-2. **Snapshot every PR** bottom→top. For each, capture: state (open/merged/closed), head SHA, base branch, mergeability, failing checks, new review items since last tick. Use `gh pr view <n> --json state,mergeable,mergeStateStatus,headRefOid,baseRefName,reviewDecision,statusCheckRollup,reviews,comments`.
-3. **Detect cascade triggers** by comparing to the previous tick (or initial baseline) and by reading each PR's `mergeStateStatus`. The status values are not interchangeable — interpret them like this:
-
-   | Status | Meaning | Action |
-   |---|---|---|
-   | `DIRTY` | Merge conflicts against base | Rebase this PR onto its current base; auto-resolve safe conflicts, escalate the rest |
-   | `BEHIND` | Base advanced; mergeable but stale | Rebase onto the new base SHA (no conflict yet, just catching up) |
-   | `UNSTABLE` | Mergeable but at least one check non-success | Inspect failing/in-progress checks. If still running, **wait** — do not retry. If actually failed, classify like `babysit-pr` (branch-related fix vs flaky retry). UNSTABLE alone is not a cascade trigger |
-   | `BLOCKED` | Branch-protection / required-review not satisfied | Wait. Surface reviews needed; never act |
-   | `UNKNOWN` | GitHub still computing | Wait one tick, re-check; do not act |
-   | `CLEAN` / `HAS_HOOKS` | Ready to merge | No cascade work; continue monitoring |
-
-   Beyond `mergeStateStatus`, also compare to the previous snapshot:
-   - A previously-open PR is now **merged** → its children need their base retargeted (GitHub auto-retargets to the merged PR's base, but the local branches still need rebasing onto the new base SHA).
-   - A previously-open PR has a **new head SHA** (the user or you pushed to it) → every PR above it in the stack needs to be rebased onto the new commits.
-4. **Act on the lowest unresolved trigger first.** Cascades propagate, so handling the bottom keeps the upper PRs from doing redundant work.
-
-   The form of the rebase command matters. A naive `git rebase origin/<new-base>` *replays* every commit reachable from the child but not from the new base — including the merged ancestor's pre-squash commits, which will conflict against the squash. Use `--onto` to drop the old-base segment cleanly:
-
-   ```bash
-   git fetch origin
-   git checkout <child-branch>
-   git rebase --onto <new-base> <old-base-tip> <child-branch>
-   # e.g. git rebase --onto origin/main origin/test/stack-1 test/stack-2
-   ```
-
-   Where:
-   - `<new-base>` = the branch the child should now sit on top of (usually `origin/main` after the parent merges, or the ancestor's new head SHA if the ancestor was updated rather than merged).
-   - `<old-base-tip>` = the tip of the branch the child used to sit on (i.e. the merged ancestor's pre-merge head, or the ancestor's previous SHA). Captured from the prior-tick snapshot or `gh pr view <ancestor> --json mergeCommit,headRefOid` before/after the change.
-   - `<child-branch>` = the PR head branch you're rebasing.
-
-   `--onto` drops the commits between the old base and the child cleanly, so a squash-merged ancestor never produces phantom conflicts in CHANGELOGs, lockfiles, or anywhere else the squashed commits modified the same files.
-
-   Sub-cases:
-   - **Merged-ancestor case:** new-base = the merged PR's base (default branch after merge). Old-base-tip = `origin/<merged-PR-head-branch>` (still present unless the user deleted it).
-   - **Updated-ancestor case:** new-base = the ancestor's new head SHA. Old-base-tip = the ancestor's previous head SHA from the prior snapshot.
-   - **Conflict-only case** (`DIRTY` with no ancestor change): a plain `git rebase origin/<base>` is fine — there's no segment to drop because the base hasn't moved out from under the PR; conflicts here are real overlapping edits, not replay artifacts.
-
-   After each successful rebase, `git push --force-with-lease` and move to the next PR up. Never `--force` without lease — another collaborator may have pushed.
-
-   **Retarget the GitHub PR base when needed.** GitHub auto-retargets a child PR's base only when the merged parent's head branch is **deleted**. If the user kept the branch (common when settings preserve branches or the merge was via API with `delete-branch=false`), the child PR will still show `base = <merged-parent-head>` on GitHub even though you've already rebased it onto `main` locally. Retarget it explicitly:
-
-   ```bash
-   gh pr edit <child-pr> --repo <owner>/<repo> --base <new-base>
-   ```
-
-   If `gh pr edit` exits non-zero with a GraphQL deprecation error (older repos with classic Projects emit a noisy warning that crashes the command), fall back to the REST API directly:
-
-   ```bash
-   gh api -X PATCH repos/<owner>/<repo>/pulls/<child-pr> -f base=<new-base>
-   ```
-
-   The REST PATCH applies cleanly and ignores the GraphQL noise.
-5. **Per-PR babysitting.** Once cascades are settled, treat each open PR like `babysit-pr` would: classify failing checks, retry flakies (budget of 3), surface review comments, fix branch-related failures. Do this top-down for visibility but bottom-up for fix priority (a failing bottom PR blocks everything above it).
+1. **Refresh the stack** — PRs may have merged or closed. Re-run discovery if any anchor disappeared.
+2. **Snapshot every PR** bottom→top. Capture state, head SHA, base branch, `mergeStateStatus`, failing checks, new review items. Persist between ticks; see `references/snapshot-format.md` for the schema and file location.
+3. **Detect cascade triggers** by combining the snapshot diff with each PR's `mergeStateStatus`:
+   - **Snapshot diff:** a previously-open PR is now `MERGED` → its children need rebasing onto the new base. A previously-open PR has a new head SHA → every PR above it needs rebasing.
+   - **`mergeStateStatus`:** routes to a specific action per value (`DIRTY` → rebase, `BEHIND` → rebase, `UNSTABLE` → inspect checks, `BLOCKED` / `UNKNOWN` → wait, `CLEAN` → no cascade work). See `references/merge-state-table.md` for the full table — these values are not interchangeable.
+4. **Act on the lowest unresolved trigger first.** Cascades propagate upward, so handling the bottom prevents redundant work above. The canonical rebase form is `git rebase --onto <new-base> <old-base-tip> <child-branch>` — a plain `git rebase` will produce phantom conflicts against a squash-merged ancestor. The full sub-case breakdown (merged-ancestor / updated-ancestor / conflict-only) and the GitHub PR base retargeting steps (including the `gh api PATCH` REST fallback when `gh pr edit --base` fails) live in `references/conflict-resolution.md`.
+5. **Per-PR checks and reviews.** Once cascades are settled, treat each open PR with normal failing-check classification, flaky retry budgets, and review-comment handling: see `references/per-pr-checks.md`.
 6. **Report progress** as a compact table:
    ```
    #123 base→main      MERGED ✅
@@ -109,92 +55,67 @@ Each polling tick (whether you are in `/loop` or polling manually) does the foll
    #125 base→f/auth-2  PENDING CI on e3a91c
    #126 base→f/auth-3  DIRTY  ⏸ conflict in src/db/migrations/2024_05.sql — needs you
    ```
-7. **Decide whether to continue.** See "Stop conditions" below.
+   Avoid dumping full check lists on every tick — only on state change.
 
-## Rebase conflict resolution
+After each successful rebase, `git push --force-with-lease` and move to the next PR up. Never `--force` without lease — a collaborator may have pushed.
 
-When `git rebase` reports conflicts, classify each conflicted file before touching it. The full classification rules live in `references/conflict-resolution.md`; the summary:
+## Rebase conflict resolution — summary
 
-**Auto-resolve in place when safe:**
+When `git rebase` reports conflicts, classify each conflicted file before touching it.
 
-- **Lockfiles** (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `Gemfile.lock`, `go.sum`): delete the conflicted file and regenerate via the project's package manager. Do not hand-merge lockfile diffs.
-- **Pure whitespace** conflicts: take the version that matches the project's formatter; run the formatter if uncertain.
-- **Non-overlapping adjacent edits** where both sides added new lines in the same block but at clearly different positions (e.g. both added a new import on adjacent lines): apply both sides in order.
-- **Generated files** (build artifacts, snapshots that the project regenerates from source): regenerate from the source-of-truth rather than merging.
+**Auto-resolve in place when the resolution is mechanically determined** (lockfiles → regenerate, whitespace → format, non-overlapping adjacent additions → take both, generated files → re-generate from source).
 
-**Stop and surface to the user when:**
+**Escalate when intent matters** (overlapping edits in logic, migrations, IaC, API schemas, deletes-vs-modify, same-line modifications in any file type including prose, >5 conflicting hunks, binaries, CI configs).
 
-- The conflict overlaps in business logic (function bodies, conditionals, control flow).
-- The file is a database migration, infrastructure-as-code, or API schema.
-- One side deleted a file the other side modified.
-- The semantic intent of the two changes is unclear from the diff.
-- More than ~5 hunks conflict in a single file, even if each individual hunk looks simple — the cognitive load shifts the safety margin past where the model should act alone.
+Full rules, file-type playbook, validation steps, and the squash-merge `--onto` carve-out: `references/conflict-resolution.md`.
 
-When escalating, report:
-- Which PR's rebase is paused.
-- The conflicted paths and a one-line summary of each.
-- A `git rebase --abort` recovery hint so the user can decide whether to roll back or take over.
+When escalating, leave the rebase paused (do not `--abort`), report which PR is paused, the conflicted paths with a one-line summary, and recovery hints.
 
-Leave the rebase in its conflicted state. Do not abort it for the user — they may want to inspect.
+## Polling and idempotency
 
-## /loop integration
+The skill is designed to be safely repeatable under **any** polling mechanism — invoke once for a one-shot tick, run under a fixed-interval loop (e.g. `/loop 2m`), a cron, a watch script, or simply re-invoke manually. A single tick must be **idempotent**: re-running it when nothing changed produces no work.
 
-This skill is designed for use under `/loop`. Two patterns:
+Idempotency relies on the snapshot file (see `references/snapshot-format.md`): always read it at tick start, write at tick end, and skip rebasing any PR whose head SHA matches the last record.
 
-- **Fixed interval** (recommended when CI is the bottleneck): `/loop 2m /babysit-pr-stack` — runs a full tick every 2 minutes.
-- **Self-paced** (recommended when actively rebasing): invoke without an interval; let the model schedule the next tick based on what it observed. If a rebase just pushed new SHAs, poll sooner (60–90 s). If everything is quietly waiting on CI, poll every 2–5 min.
-
-A single tick must be **idempotent** — if /loop fires it twice, the second tick should be a no-op when nothing changed. Use the prior-tick snapshot to detect changes; never re-rebase a PR whose head SHA matches the last tick's record.
-
-**Snapshot file format.** Persist at `/tmp/babysit-pr-stack-<owner>-<repo>.json`. Schema:
-
-```json
-{
-  "anchor": 3,
-  "default_branch": "main",
-  "stack": [
-    {"number": 1, "head": "test/stack-1", "base": "main",          "head_sha": "f01a4f7…", "state": "OPEN", "merge_state": "CLEAN"},
-    {"number": 2, "head": "test/stack-2", "base": "test/stack-1",  "head_sha": "8965a71…", "state": "OPEN", "merge_state": "CLEAN"},
-    {"number": 3, "head": "test/stack-3", "base": "test/stack-2",  "head_sha": "c72934c…", "state": "OPEN", "merge_state": "CLEAN"}
-  ],
-  "last_tick_at": "2026-05-27T13:14:00Z"
-}
-```
-
-Read this file at the **start** of every tick. If missing (first run, or a new anchor), skip diffing and treat the current snapshot as baseline. Write at the **end** of every tick, replacing the prior contents. Diff by comparing `head_sha` and `state` per PR; a SHA change or `OPEN → MERGED` transition is a cascade trigger. Empty/zero values for `reviewDecision` or `statusCheckRollup` are normal when no reviewers/CI are configured — treat them as the same as "no signal", not as missing data.
-
-**First-tick exception.** "Treat current snapshot as baseline" is correct for everything *except* already-merged ancestors. If you find a PR with `state: MERGED` whose head branch is still listed as the `baseRefName` of a downstream OPEN PR, that is a cascade trigger even on the first tick — the merge happened before you started watching, but the work to propagate it has not been done yet. Process it the same as if you had observed the merge transition live. Without this exception, anchoring the skill on a stack where the bottom merged five minutes before you ran would silently skip the cascade.
+Cadence guidance when the model paces itself:
+- Just pushed new SHAs: poll again in 60–90 s to catch the new CI quickly.
+- Quietly waiting on CI: poll every 2–5 min.
+- Steady-state green stack waiting on review: 5–15 min is fine.
 
 ## Git safety
 
-- Use `git push --force-with-lease`, never `--force`.
+- `git push --force-with-lease`, never `--force`.
 - Never run destructive ops (`reset --hard`, `clean -fd`, branch deletes) without explicit user confirmation, even mid-rebase.
 - Before checking out any stack branch, verify the worktree is clean. If there are unrelated uncommitted changes, stop and ask — the user may have in-progress work.
-- If you started a rebase and need to bail, prefer `git rebase --abort` over `reset`. Aborting leaves no residue.
-- Keep a mental note of the original HEAD of each branch you touched so you can guide the user to recover if something goes wrong (e.g. `git reflog show <branch>`).
+- If a rebase needs to bail, prefer `git rebase --abort` over `reset`.
+- Note the original HEAD of each touched branch so you can guide the user to recover via reflog if something goes wrong.
 - Do not delete branches automatically when their PR merges — leave that to the user or the repo's auto-delete setting.
 
 ## Stop conditions (strict)
 
-Stop only when one of these is true:
+Stop only when:
 
-- **Every PR in the stack is merged or closed.** Final summary, then stop.
-- **The remaining stack is fully green, mergeable, and review-clean** — at this point keep watching (like `babysit-pr`) for late review comments, but do not exit. Stop only when merged.
-- **A conflict requires human judgment** (see escalation rules above).
-- **A non-recoverable git or auth error** (push rejected for reasons other than non-fast-forward, `gh` auth missing, repo permissions).
-- **The user explicitly interrupts.**
+- Every PR in the stack is merged or closed.
+- A conflict requires human judgment.
+- A non-recoverable git or auth error (push rejected for reasons other than non-fast-forward, `gh` auth missing, repo permissions).
+- The user explicitly interrupts.
 
-Do **not** stop because a single tick shows "no changes" — that is the normal steady state while CI runs.
+When the remaining stack is fully green, mergeable, and review-clean, keep watching for late review comments — do not exit until everything has merged.
+
+Do **not** stop because a single tick shows "no changes" — that is the steady state while CI runs.
 
 ## Output expectations
 
-- Compact per-tick table (see step 6 above). Avoid dumping full check lists on every tick — only when something changes.
+- Compact per-tick table (see step 6).
 - One-time celebratory line when the bottom PR merges (`🎉 #123 landed — rebasing the rest…`).
-- Final summary when everything merges: list of merged PR numbers, total flaky reruns used, any conflicts the user resolved, and the final SHAs.
-- When asking the user for help with a conflict, lead with the exact `git status` excerpt and the suggested next steps — do not bury the ask.
+- Final summary when everything merges: merged PR numbers, total flaky reruns used, conflicts the user resolved, final SHAs.
+- When asking the user for help with a conflict, lead with the exact `git status` excerpt and suggested next steps — don't bury the ask.
 
 ## References
 
-- `references/stack-discovery.md` — `gh` commands and walking algorithm.
-- `references/conflict-resolution.md` — full conflict classification rules and per-file-type strategies.
-- The single-PR cousin: `babysit-pr` skill — use its CI classification, review-comment handling, and polling cadence for each individual PR within the stack.
+- `references/stack-discovery.md` — `gh` commands, walking pseudocode, edge cases.
+- `references/merge-state-table.md` — `mergeStateStatus` interpretation.
+- `references/snapshot-format.md` — snapshot file schema, location, first-tick exception.
+- `references/conflict-resolution.md` — conflict classification rules, `--onto` sub-cases, retargeting, validation.
+- `references/per-pr-checks.md` — CI failure classification, flaky retry budget, review-comment handling for each individual PR.
+- `test-linked-prs.md` — end-to-end test scenarios.

@@ -119,19 +119,58 @@ After `git rebase --continue` completes for a PR:
 
 Do not skip step 1 for trivial-looking resolutions. The whole point of cascade rebasing is to land code; landing broken code wastes more time than the quick check costs.
 
-## Squash-merge cascades intentionally drop commits
+## Cascade rebase — the three sub-cases
 
-The "never drop commits" rule has one carve-out: when a stacked ancestor was **squash-merged**, the child branch's history still contains the pre-squash commits as ordinary commits, and rebasing the child onto the new base with a plain `git rebase origin/<base>` will replay them on top of the squash — producing phantom conflicts in every file the ancestor modified.
-
-The right tool is `git rebase --onto`, applied *structurally*, before conflict resolution ever runs:
+The form of `git rebase` matters. A naive `git rebase origin/<new-base>` *replays* every commit reachable from the child but not from the new base — including a merged ancestor's pre-squash commits, which will conflict against the squash. Use `--onto` to drop the old-base segment cleanly:
 
 ```bash
+git fetch origin
+git checkout <child-branch>
 git rebase --onto <new-base> <old-base-tip> <child-branch>
+# e.g. git rebase --onto origin/main origin/test/stack-1 test/stack-2
 ```
 
-This drops the commit range `<old-base-tip>..<child-branch>` minus what's already in `<new-base>` — exactly the squashed segment — without invoking the conflict-resolution path. If instead you run a plain rebase and reach for `--theirs` / `--ours` / escalation, you're solving the wrong problem.
+Where:
+- `<new-base>` = the branch the child should now sit on top of (usually `origin/<default-branch>` after the parent merges, or the ancestor's new head SHA if the ancestor was updated rather than merged).
+- `<old-base-tip>` = the tip of the branch the child used to sit on (i.e. the merged ancestor's pre-merge head, or the ancestor's previous SHA). Captured from the prior-tick snapshot or `gh pr view <ancestor> --json mergeCommit,headRefOid` before/after the change.
+- `<child-branch>` = the PR head branch you're rebasing.
 
-See the "Merged-ancestor case" in `SKILL.md` for the exact command. Always prefer `--onto` for post-merge cascades; reserve plain `git rebase origin/<base>` for the case where the base hasn't changed and the conflict is genuinely an overlapping edit.
+`--onto` drops the commit range `<old-base-tip>..<child-branch>` minus what's already in `<new-base>` — exactly the squashed segment — without invoking the conflict-resolution path. If instead you run a plain rebase and reach for `--theirs` / `--ours` / escalation, you're solving the wrong problem.
+
+### Sub-case A — Merged-ancestor (the squash-merge case)
+
+- `<new-base>` = the merged PR's base (default branch after merge).
+- `<old-base-tip>` = `origin/<merged-PR-head-branch>` (still present unless the user deleted it).
+
+### Sub-case B — Updated-ancestor (parent got new commits, didn't merge yet)
+
+- `<new-base>` = the ancestor's new head SHA.
+- `<old-base-tip>` = the ancestor's previous head SHA from the prior snapshot.
+
+### Sub-case C — Conflict-only (DIRTY with no ancestor change)
+
+- A plain `git rebase origin/<base>` is fine — there's no segment to drop because the base hasn't moved out from under the PR.
+- Conflicts here are real overlapping edits, not replay artifacts. Apply the classification rules above.
+
+### Always prefer `--onto` for post-merge cascades
+
+Reserve plain `git rebase origin/<base>` only for sub-case C (no ancestor change). For the other two, `--onto` is what you want — every time.
+
+## Retargeting the GitHub PR base
+
+After a successful local rebase, the GitHub PR's `base` may still point at the merged ancestor's branch. GitHub auto-retargets only when the merged parent's head branch is **deleted**. If the user kept the branch (common when settings preserve branches or the merge was via API with `delete-branch=false`), retarget it explicitly:
+
+```bash
+gh pr edit <child-pr> --repo <owner>/<repo> --base <new-base>
+```
+
+If `gh pr edit` exits non-zero with a GraphQL deprecation error (older repos with classic Projects emit a noisy warning that crashes the command), fall back to the REST API:
+
+```bash
+gh api -X PATCH repos/<owner>/<repo>/pulls/<child-pr> -f base=<new-base>
+```
+
+The REST PATCH applies cleanly and ignores the GraphQL noise.
 
 ## What never to do
 
