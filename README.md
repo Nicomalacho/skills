@@ -5,6 +5,7 @@ Claude Code skills, version-controlled here and installable on any machine.
 ## Available skills
 
 - [`babysit-pr-stack/`](./babysit-pr-stack/) — manage a stacked GitHub PR set: discover the chain, watch each PR, cascade-rebase children when an ancestor merges or moves, auto-resolve safe conflicts (lockfiles, generated files, non-overlapping additions, whitespace), and escalate risky ones (migrations, IaC, same-line edits) with a clean handoff to the user. Designed for `/loop` use against plain GitHub PRs — no graphite/spr/ghstack required.
+- [`pr-review-watch/`](./pr-review-watch/) — poll a Slack channel for PR-review mentions and, per PR link, spin up a full local review session: a [feature-cli](https://github.com/Nicomalacho) worktree via `feature from-pr`, a light-green `[PR-REVIEW]` cmux workspace running a Claude Code session pre-prompted to `/review` the PR, and a browser tab on the PR. Tears everything down once the PR is approved by you or merged/closed. Designed for `/loop 5m` use; state lives in a local `state.json` (created at runtime, not in this repo). Note: the SKILL.md hardcodes machine/account specifics (Slack channel + user ID, GitHub login) — edit those when installing elsewhere.
 
 ## Install
 
