@@ -18,6 +18,16 @@ One iteration = one poll of #dev-pr-reviews. Run recurring with:
 
 A one-off `/pr-review-watch` invocation works for testing.
 
+> ⚠️ **WARNING — personalized skill.** The "Hardcoded environment facts" table
+> below is specific to Nicolas's machine and accounts (Slack channel + user ID,
+> GitHub login, feature-cli paths). If you installed this skill from the
+> [Nicomalacho/skills](https://github.com/Nicomalacho/skills) repo, you MUST
+> replace those values with your own before running it — otherwise it will
+> watch the wrong Slack channel, match the wrong mentions, and check PR
+> approvals against the wrong GitHub user. Find your Slack user ID via the
+> Slack MCP tools, your channel ID via `slack_search_channels`, and your
+> GitHub login via `gh auth status`.
+
 ## Hardcoded environment facts
 
 | Fact | Value |
